@@ -11,6 +11,11 @@
 #define MAXLINE 100
 #define SERVER_PORT 12345
 
+
+
+
+char test1[] = "GET /~kaichen/index.html HTTP/1.1\r\n xixii hahdfafd asdf\r\n fasdfa\r\n";
+
 int main(int argc, char *argv[])
 {
         int sockfd, n, bytes_wrt, len;
@@ -49,7 +54,7 @@ int main(int argc, char *argv[])
         }
 
         /* write the request */
-        sprintf(wrt_buff, "%s\n", filename);
+        sprintf(wrt_buff, "%s\n", test1);
         bytes_wrt = 0;
         len = strlen(wrt_buff);
         while (bytes_wrt < len) {
