@@ -9,10 +9,16 @@
 #include <arpa/inet.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <assert.h>
+#include "zlib.h"
 
 #define SERVER_PORT (12345)
 #define LISTENNQ (5)
 #define MAXLINE (100)
+#define CHUNK 16384
+
+#define windowBits 15
+#define GZIP_ENCODING 16
 
 #define SERVER_STRING "Server: HTTPSERVER_JBAI"
 enum FileType {
@@ -29,10 +35,13 @@ void not_found(int connfd);
 int exists(const char *fname);
 void respondHTML(int connfd, const char* filepath);
 void respondCSS(int connfd, const char* filepath);
-
-// try to use the semaphore to do the synchronization things.
-// but here we only need to read from the server.
-// need the semaphore to limit the access to the resources
+void respondPDF(int connfd, const char* filepath);
+void respondPPTX(int connfd, const char* filepath);
+void respondJPG(int connfd, const char* filepath);
+void respondChunked(int connfd);
+void respondZippedHTML(int connfd, const char* filepath);
+void not_found(int connfd);
+int def(FILE *source, FILE *dest, int level);
 
 int main(int argc, char **argv) {
   int listenfd, connfd;
@@ -99,7 +108,7 @@ int main(int argc, char **argv) {
   return 0;
 }
 
-void* request_func(void* connfdptr) { 
+void* request_func(void* connfdptr) {
   char rcv_buff[1024];
   char method[255];
   char url[255];
@@ -136,47 +145,168 @@ void* request_func(void* connfdptr) {
   */
 
   if (strcmp(url, "/") == 0) {
-    respondHTML(connfd, "index.html");
+    respondZippedHTML(connfd, "index.html");
   } 
+  else if (strcmp(url, "/chunked") == 0) {
+    respondChunked(connfd);
+  }
   else {
     // try to parse what kind of file it is
     char extension_name[128];
-    char * pch;
+    char * pch = 0;
     char path_to_file[255];
 
     pch=strchr(url,'.');
+    if (pch == 0) {
+      not_found(connfd);
+    }
     pch++;
     sprintf(extension_name, "%s", pch);
     sprintf(path_to_file, ".%s", url);
     if (strcmp(extension_name, "css") == 0) {
-      printf("here\n");
       respondCSS(connfd, path_to_file);
     } 
     else if (strcmp(extension_name, "html") == 0) {
       respondHTML(connfd, path_to_file);
     } 
-    else if (strcmp(extension_name, "pptx") == 0) {
-      not_found(connfd);
+    else if (strcmp(extension_name, "ppt") == 0 || strcmp(extension_name, "pptx") == 0) {
+      respondPPTX(connfd, path_to_file);
     } 
     else if (strcmp(extension_name, "pdf") == 0) {
-      not_found(connfd);
+      respondPDF(connfd, path_to_file);
     } 
     else if (strcmp(extension_name, "jpg") == 0) {
-      not_found(connfd);
+      respondJPG(connfd, path_to_file);
     } 
 
     else {
       not_found(connfd);
     }
-    // 
   }
   
-	
-
-
-
   free(connfdptr);
 	close(connfd);
+}
+
+void respondJPG(int connfd, const char* filepath) {
+  char buf[10240];
+  char* file_buffer = 0;
+  if (exists(filepath)) {
+    sprintf(buf, "HTTP/1.1 200 OK\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+    // data and time 
+    time_t now = time(0);
+    struct tm tm = *gmtime(&now);
+    strftime(buf, sizeof buf, "Date: %a, %d %b %Y %H:%M:%S %Z\r\n", &tm);
+    send(connfd, buf, strlen(buf), 0);
+
+    // server infomation
+    sprintf(buf, SERVER_STRING);
+    send(connfd, buf, strlen(buf), 0);
+    sprintf(buf, "\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+    // get last modified date
+    struct stat attrib;
+    stat(filepath, &attrib);
+    strftime(buf, sizeof buf, "Last-Modified: %a, %d %b %Y %H:%M:%S %Z\r\n", gmtime(&(attrib.st_ctime)));
+    send(connfd, buf, strlen(buf), 0);
+
+    
+    FILE *file;
+    file = fopen(filepath, "r");
+
+    fseek (file, 0, SEEK_END);
+    int length = ftell (file);
+    sprintf(buf, "Content-Length: %d\r\n", length);
+    send(connfd, buf, strlen(buf), 0);
+               
+    sprintf(buf, "Content-Type: image/jpeg\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+    
+
+    sprintf(buf, "\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+
+    fseek (file, 0, SEEK_SET);
+
+    file_buffer = malloc (length);
+    fread (file_buffer, 1, length, file);
+    if (file_buffer) {
+      send(connfd, file_buffer, length, 0);
+    } 
+    
+    
+   
+
+    fclose(file);
+        
+  }
+  else {
+    not_found(connfd);
+  }
+}
+
+void respondPPTX(int connfd, const char* filepath) {
+  char buf[1024];
+  char* file_buffer = 0;
+  if (exists(filepath)) {
+    sprintf(buf, "HTTP/1.1 200 OK\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+    // data and time 
+    time_t now = time(0);
+    struct tm tm = *gmtime(&now);
+    strftime(buf, sizeof buf, "Date: %a, %d %b %Y %H:%M:%S %Z\r\n", &tm);
+    send(connfd, buf, strlen(buf), 0);
+
+    // server infomation
+    sprintf(buf, SERVER_STRING);
+    send(connfd, buf, strlen(buf), 0);
+    sprintf(buf, "\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+    // get last modified date
+    struct stat attrib;
+    stat(filepath, &attrib);
+    strftime(buf, sizeof buf, "Last-Modified: %a, %d %b %Y %H:%M:%S %Z\r\n", gmtime(&(attrib.st_ctime)));
+    send(connfd, buf, strlen(buf), 0);
+
+    
+    FILE *file;
+    file = fopen(filepath, "r");
+
+    fseek (file, 0, SEEK_END);
+    int length = ftell (file);
+    sprintf(buf, "Content-Length: %d\r\n", length);
+    send(connfd, buf, strlen(buf), 0);
+
+    sprintf(buf, "Content-Type: application/vnd.openxmlformats-officedocument.presentationml.presentation\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+
+
+    sprintf(buf, "\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+
+    fseek (file, 0, SEEK_SET);
+    file_buffer = malloc (length);
+    fread (file_buffer, 1, length, file);
+    if (file_buffer) {
+      send(connfd, file_buffer, length, 0);
+    } 
+
+
+    fclose(file);
+        
+  }
+  else {
+    not_found(connfd);
+  }
 }
 
 void respondCSS(int connfd, const char* filepath) {
@@ -302,6 +432,74 @@ void respondHTML(int connfd, const char* filepath) {
   }
 }
 
+void respondPDF(int connfd, const char* filepath) {
+  char buf[1024];
+  char* file_buffer = 0;
+  if (exists(filepath)) {
+    sprintf(buf, "HTTP/1.1 200 OK\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+    // data and time 
+    time_t now = time(0);
+    struct tm tm = *gmtime(&now);
+    strftime(buf, sizeof buf, "Date: %a, %d %b %Y %H:%M:%S %Z\r\n", &tm);
+    send(connfd, buf, strlen(buf), 0);
+
+    // server infomation
+    sprintf(buf, SERVER_STRING);
+    send(connfd, buf, strlen(buf), 0);
+    sprintf(buf, "\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+    // get last modified date
+    struct stat attrib;
+    stat(filepath, &attrib);
+    strftime(buf, sizeof buf, "Last-Modified: %a, %d %b %Y %H:%M:%S %Z\r\n", gmtime(&(attrib.st_ctime)));
+    send(connfd, buf, strlen(buf), 0);
+
+    
+    FILE *file;
+    file = fopen(filepath, "r");
+
+    fseek (file, 0, SEEK_END);
+    int length = ftell (file);
+    sprintf(buf, "Content-Length: %d\r\n", length);
+    send(connfd, buf, strlen(buf), 0);
+
+    sprintf(buf, "Content-Type: application/pdf\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+
+
+    sprintf(buf, "\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+
+    fseek (file, 0, SEEK_SET);
+    file_buffer = malloc (length);
+    fread (file_buffer, 1, length, file);
+    if (file_buffer) {
+      send(connfd, file_buffer, length, 0);
+    } 
+
+
+    fclose(file);
+        
+
+
+
+  }
+  else {
+    not_found(connfd);
+  }
+}
+
+void respondChunked(int connfd) {
+  char buf[10240];
+  sprintf(buf,"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nDate: Mon, 28 Feb 2011 10:38:19 GMT\r\nTransfer-Encoding: chunked\r\nServer: Myserver\r\n\r\n%zx\r\n%s\r\n0\r\n\r\n",strlen("<html><body><p> This is the Chunked message </p> </body></html>"),"<html><body><p> This is the Chunked message </p> </body></html>");
+  send(connfd, buf, strlen(buf), 0);
+}
+
 void not_found(int connfd) {
  char buf[1024];
 
@@ -327,6 +525,79 @@ void not_found(int connfd) {
  send(connfd, buf, strlen(buf), 0);
 }
 
+void respondZippedHTML(int connfd, const char* filepath) {
+  char buf[1024];
+  char* file_buffer = 0;
+  if (exists(filepath)) {
+    sprintf(buf, "HTTP/1.1 200 OK\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+    // data and time 
+    time_t now = time(0);
+    struct tm tm = *gmtime(&now);
+    strftime(buf, sizeof buf, "Date: %a, %d %b %Y %H:%M:%S %Z\r\n", &tm);
+    send(connfd, buf, strlen(buf), 0);
+
+    // server infomation
+    sprintf(buf, SERVER_STRING);
+    send(connfd, buf, strlen(buf), 0);
+    sprintf(buf, "\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+    // get last modified date
+    struct stat attrib;
+    stat(filepath, &attrib);
+    strftime(buf, sizeof buf, "Last-Modified: %a, %d %b %Y %H:%M:%S %Z\r\n", gmtime(&(attrib.st_ctime)));
+    send(connfd, buf, strlen(buf), 0);
+
+    
+    FILE *file;
+    file = fopen(filepath, "r");
+
+    char zippedPath[128];
+    sprintf(zippedPath, "%s.zip", filepath);
+
+    FILE *zippedfile;
+    zippedfile = fopen(zippedPath, "w+");
+
+    int ret = def(file, zippedfile, Z_DEFAULT_COMPRESSION);
+    if (ret != Z_OK)
+       not_found(connfd);
+
+
+
+    fseek (zippedfile, 0, SEEK_END);
+    int length = ftell (zippedfile);
+    sprintf(buf, "Content-Length: %d\r\n", length);
+    send(connfd, buf, strlen(buf), 0);
+
+    sprintf(buf, "Content-Type: text/html\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+    sprintf(buf, "Content-Encoding: gzip\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+    sprintf(buf, "\r\n");
+    send(connfd, buf, strlen(buf), 0);
+
+
+    fseek (zippedfile, 0, SEEK_SET);
+    file_buffer = malloc (length);
+    fread (file_buffer, 1, length, zippedfile);
+    if (file_buffer) {
+      send(connfd, file_buffer, length, 0);
+    } 
+
+
+    fclose(file);
+    fclose(zippedfile);
+    remove(zippedPath);
+  }
+  else {
+    not_found(connfd);
+  }
+}
+
 int exists(const char *fname) {
     printf("%s\n", fname);
     FILE *file;
@@ -337,3 +608,54 @@ int exists(const char *fname) {
     }
     return 0;
 }
+
+
+int def(FILE *source, FILE *dest, int level) {
+    int ret, flush;
+    unsigned have;
+    z_stream strm;
+    unsigned char in[CHUNK];
+    unsigned char out[CHUNK];
+
+    /* allocate deflate state */
+    strm.zalloc = Z_NULL;
+    strm.zfree = Z_NULL;
+    strm.opaque = Z_NULL;
+    ret = deflateInit2(&strm, level, Z_DEFLATED, windowBits | GZIP_ENCODING, 8, Z_DEFAULT_STRATEGY);
+    if (ret != Z_OK)
+        return ret;
+
+    /* compress until end of file */
+    do {
+        strm.avail_in = fread(in, 1, CHUNK, source);
+        if (ferror(source)) {
+            (void)deflateEnd(&strm);
+            return Z_ERRNO;
+        }
+        flush = feof(source) ? Z_FINISH : Z_NO_FLUSH;
+        strm.next_in = in;
+
+        /* run deflate() on input until output buffer not full, finish
+           compression if all of source has been read in */
+        do {
+            strm.avail_out = CHUNK;
+            strm.next_out = out;
+            ret = deflate(&strm, flush);    /* no bad return value */
+            assert(ret != Z_STREAM_ERROR);  /* state not clobbered */
+            have = CHUNK - strm.avail_out;
+            if (fwrite(out, 1, have, dest) != have || ferror(dest)) {
+                (void)deflateEnd(&strm);
+                return Z_ERRNO;
+            }
+        } while (strm.avail_out == 0);
+        assert(strm.avail_in == 0);     /* all input will be used */
+
+        /* done when last data in file processed */
+    } while (flush != Z_FINISH);
+    assert(ret == Z_STREAM_END);        /* stream will be complete */
+
+    /* clean up and return */
+    (void)deflateEnd(&strm);
+    return Z_OK;
+}
+

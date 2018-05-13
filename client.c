@@ -14,7 +14,7 @@
 
 
 
-char test1[] = "GET /~kaichen/index.html HTTP/1.1\r\n xixii hahdfafd asdf\r\n fasdfa\r\n";
+char test1[] = "GET /test.jpg HTTP/1.1\r\n xixii hahdfafd asdf\r\n fasdfa\r\n";
 
 int main(int argc, char *argv[])
 {
